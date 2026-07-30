@@ -1,6 +1,6 @@
 # How to: wraptainer を使ってアプリをコンテナ化する
 
-ここでは `simple-shopping-site`（Java 21 + Spring Boot + PostgreSQL Primary/Replica + Apache LB）を例に、`make all` の各ステップと実際の出力を示します。
+ここでは [simple-shopping-site](https://github.com/ysakashita/simple-shopping-site)（Java 21 + Spring Boot + PostgreSQL Primary/Replica + Apache LB）を例に、`make all` の各ステップと実際の出力を示します。
 
 ## 前提条件
 
