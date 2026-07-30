@@ -1,0 +1,152 @@
+networks:
+  app_net:
+
+volumes:
+  db_primary_data:
+  db_replica_data:
+
+services:
+  db-primary:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-shopuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+      POSTGRES_DB: ${DB_NAME:-shopdb}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-changeme}
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=3
+      - -c
+      - wal_keep_size=256
+      - -c
+      - hot_standby=on
+      - -c
+      - hba_file=/etc/postgresql/pg_hba.conf
+    volumes:
+      - db_primary_data:/var/lib/postgresql/data
+      - /path/to/_out/simple-shopping-site/init-scripts:/docker-entrypoint-initdb.d:ro
+      - /path/to/_out/simple-shopping-site/init-scripts/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-shopuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - app_net
+
+  db-replica:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-shopuser}
+      PGPASSWORD: ${REPLICATION_PASSWORD:-changeme}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        if [ -z "$$(ls -A /var/lib/postgresql/data 2>/dev/null)" ]; then
+          chown postgres:postgres /var/lib/postgresql/data || true
+          gosu postgres pg_basebackup -h db-primary -U replicator \
+            -D /var/lib/postgresql/data \
+            -R -X stream -c fast -P
+          chmod 0700 /var/lib/postgresql/data
+        fi
+        exec gosu postgres postgres -c hot_standby=on
+    volumes:
+      - db_replica_data:/var/lib/postgresql/data
+    depends_on:
+      db-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-shopuser}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - app_net
+
+  app1:
+    build:
+      context: /path/to/apps/simple-shopping-site
+      dockerfile: /path/to/apps/simple-shopping-site/Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: ha
+      SERVER_PORT: 8080
+      DB_PRIMARY_HOST: db-primary
+      DB_PRIMARY_PORT: 5432
+      DB_REPLICA_HOST: db-replica
+      DB_REPLICA_PORT: 5432
+      DB_USER: ${DB_USER:-shopuser}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      JWT_SECRET: ${JWT_SECRET:-changeme-replace-with-openssl-rand-base64-32}
+    depends_on:
+      db-primary:
+        condition: service_healthy
+      db-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/shop/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - app_net
+
+  app2:
+    build:
+      context: /path/to/apps/simple-shopping-site
+      dockerfile: /path/to/apps/simple-shopping-site/Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: ha
+      SERVER_PORT: 8080
+      DB_PRIMARY_HOST: db-primary
+      DB_PRIMARY_PORT: 5432
+      DB_REPLICA_HOST: db-replica
+      DB_REPLICA_PORT: 5432
+      DB_USER: ${DB_USER:-shopuser}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      JWT_SECRET: ${JWT_SECRET:-changeme-replace-with-openssl-rand-base64-32}
+    depends_on:
+      db-primary:
+        condition: service_healthy
+      db-replica:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/shop/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    networks:
+      - app_net
+
+  lb:
+    build:
+      context: /path/to/apps/simple-shopping-site/apache
+      dockerfile: /path/to/apps/simple-shopping-site/apache/Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      app1:
+        condition: service_healthy
+      app2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "httpd", "-t"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - app_net
