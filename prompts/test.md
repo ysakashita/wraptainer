@@ -13,6 +13,19 @@ DB サービスの動作確認は `pg_isready` や SQL（`pg_is_in_recovery()`�
 - `--tail` なしはログ全量を取得するため重い
 - `pg_isready` や SQL は確実かつ軽量
 
+`psql` / `pg_isready` を呼ぶときは接続ユーザを `-U` で明示すること（例: `docker exec -e PGPASSWORD=... -u postgres <cid> psql -U "$DB_USER" -d "$DB_NAME" ...`）。省略すると OS ユーザ名（`postgres`）でロール解決され、`POSTGRES_USER` がデフォルト以外だと「role does not exist」で全 SQL チェックが失敗する。ユーザ名は docker-compose.yml と同じ環境変数（`DB_USER` / `POSTGRES_USER`）から取得する。
+
+## 「失敗すること」を検証するアサーション
+
+「このコマンドは失敗するはず」という否定的アサーション（例: read-only レプリカが書き込みを拒否する、権限のないユーザがアクセスできない、無効なトークンで 401 になる）を書くときは、エラーを飲み込むヘルパーを流用しないこと。
+
+- `run_psql() { docker exec ... psql ... 2>/dev/null || true; }` のように末尾 `|| true` や `2>/dev/null` で常に exit 0 になるヘルパーを、否定的アサーションの `if` 条件に使うと**常に真**になり、正常な構成でも FAIL を報告する。
+- 否定的アサーションは次のいずれかで検証する:
+  - コマンド出力（`2>&1` で stderr も取得）に期待するエラー文字列が含まれるか（例: `printf '%s' "$out" | grep -qi 'read-only'`）
+  - 期待どおり副作用が起きなかったこと（例: 作られないはずのテーブルが `SELECT to_regclass('public.<t>') IS NULL`）
+  - 飲み込まない専用の呼び出しで実際の終了コードを直接判定する
+- `set -euo pipefail` 下で失敗しうるコマンドの終了コードを使う場合は `if cmd; then ...` か `cmd && rc=0 || rc=$?` にする。`cmd; rc=$?` と裸で書くと `set -e` で先に落ちる。
+
 ## 出力フォーマット
 
 bash スクリプトの内容のみを stdout に直接出力してください。ファイル書き込みツールは使用しないでください。**必ず `#!/usr/bin/env bash` で始めてください（これが出力の最初の行でなければなりません）**。Markdown のコードフェンスで囲まないでください。スクリプトの前後に説明文を含めないでください。
