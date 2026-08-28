@@ -11,6 +11,10 @@ CLAUDE.md に定義されたコンテナ化ポリシーに従ってください�
 - HTTP ステータスコードの誤認識 → `curl -s -o /dev/null -w '%{http_code}'` パターンで正確に取得する
 - コンテナ名の誤り → `docker compose ps` 出力を参考に正確なコンテナ名を使う
 - DB ログの起動メッセージ検索が失敗 → `docker logs | grep "ready to accept"` は禁止。`pg_isready` や SQL（`pg_is_in_recovery()` 等）で代替すること
+- `psql` が `role "postgres" does not exist` で失敗 / SQL チェックの結果が軒並み空文字 → 接続ユーザ未指定で OS ユーザ名が使われている。`psql -U "$DB_USER"` のように docker-compose.yml と同じ `POSTGRES_USER` 由来の値を `-U` で明示する
+- 「失敗するはず」のアサーションが常に FAIL する → エラーを飲み込むヘルパー（末尾 `|| true` / `2>/dev/null` で常に exit 0）を否定的アサーションの `if` 条件に流用している。出力へのエラー文字列マッチ（`2>&1` + `grep -qi 'read-only'` 等）、副作用が起きなかったことの確認（`to_regclass(...) IS NULL` 等）、または飲み込まない専用呼び出しでの終了コード判定に置き換える
+- `set -euo pipefail` 下でコマンドが途中終了する → 失敗しうるコマンドの結果を使うときは `if cmd; then` か `cmd && rc=0 || rc=$?` にする（`cmd; rc=$?` は不可）
+- `container ... is not connected to the network` 等のデプロイ時 Compose レースが原因 → これはテストスクリプトでも docker-compose.yml でも直せない。テストスクリプトは変更せずそのまま出力する（デプロイ実行側が再試行で対処する）
 
 ## 出力フォーマット
 

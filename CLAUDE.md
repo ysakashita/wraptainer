@@ -68,6 +68,11 @@
 - **replica データディレクトリのパーミッション**: `pg_basebackup` 完了後は必ず `chmod 0700 /var/lib/postgresql/data` を実行すること。Docker の named volume はデフォルトで 0755 等広めのパーミッションを持つ場合があり、PostgreSQL は 0700 または 0750 以外のデータディレクトリを起動拒否する
 - **`docker-entrypoint-initdb.d` にシェルスクリプト配置禁止**: macOS Docker Desktop の virtioFS ボリュームマウントでは `.sh` ファイルが executable に見え、exec 時に "bad interpreter: Permission denied" で失敗する。init 処理は `.sql` ファイル（psql で実行）と `-c hba_file=` によるカスタム `pg_hba.conf` マウントで実装すること
 - **healthcheck の start_period**: DB 等、起動・初期化に時間がかかるサービスは `start_period: 60s` 以上を設定すること（デフォルト 0s では起動前から失敗カウントが始まる）
+- **コンテナ再作成レースは YAML で回避しない**: `docker compose up -d --build` の再実行時に `Error response from daemon: container <id> is not connected to the network <project>_<network>`（類似: `has active endpoints` / `network <name> not found` / `endpoint with name ... already exists`）が出ることがある。これは user-defined network 上で複数コンテナが同時に再作成される際の Docker Compose 側のレースであり、**docker-compose.yml の不具合ではない**。デプロイ実行側（Makefile）が「クリーンな `down` → `up` の再試行」と BuildKit アテステーション無効化（`BUILDX_NO_DEFAULT_ATTESTATIONS=1`）で対処する責務を持つ。したがって compose 生成・修正時に次のような回避策を YAML へ持ち込まない:
+  - `build.provenance: false` / `build.sbom: false`（再作成レースの緩和目的での付与）
+  - 依存関係のない `depends_on`（例: `app2` を `app1` に `service_started` で依存させて起動を直列化する等）
+  - サービス単位の `network` エイリアスやスケール抑制などの不自然な調整
+  これらはアプリ固有のハックになりやすく、根本原因（実行側のレース）を隠すだけなので禁止。`depends_on` は「実際にその順序が必要な依存」（DB → アプリ、アプリ → LB 等）にのみ使う。
 
 ---
 
@@ -77,11 +82,17 @@
 - コンテナ起動を待機する（ポーリング + タイムアウト。単純な `sleep` は禁止）
 - HTTP サービスは `curl` でエンドポイントを叩き、ステータスコードを検証する
 - 非 HTTP サービス（PostgreSQL 等）の起動確認は `pg_isready` や SQL（`pg_is_in_recovery()`、`pg_stat_replication` 等）で行う。`docker logs | grep "ready to accept"` のようなログ検索は禁止（`--tail` なしは重く、`--tail` ありは起動メッセージを見逃す）
+- **DB クライアント接続時のユーザ指定**: `psql` / `pg_isready` 等の DB クライアントは接続ユーザを省略すると OS ユーザ名（`docker exec -u postgres` なら `postgres`）を使う。コンテナが `POSTGRES_USER` をデフォルト以外の値で初期化している場合その名前のロールは存在せず「role "..." does not exist」で失敗する。テストからの DB 接続は必ず compose と同じ環境変数由来のユーザ名を `-U` で明示すること。SQL チェックが軒並み空文字/失敗する場合はまずこれを疑う
 - 各チェックは PASS / FAIL を明示して出力する
 - 外部ツールへの依存は最小限（標準 Unix ツール + docker のみ）
 - ログが出力されているかどうかを確認する
 - **ロードバランサーの分散検証**: アプリコンテナのログは多くのフレームワークでデフォルトではリクエストを記録しないため、LB の分散テストではアプリログを根拠にしない。代わりに「LB エンドポイントが HTTP 200 を返す」「全バックエンドが healthcheck 通過」を確認することで正常動作を保証する。ログ行数の変化を比較する方法も不確実なため禁止。
 - **シェル特殊文字の安全な扱い**: 生成するスクリプト内でシングルクォートを含む文字列（例: `docker exec ... bash -c '...'`）は、シングルクォートをネストせず `"..."` に置き換えるか `printf '%s' ...` 経由で渡す。`#` を含むコマンド（awk パターン等）は Makefile コンテキストでコメントと誤解釈されることがあるため、`#` 自体を文字列として明示的に扱う代替表現（例: `[[:space:]]*` など）を検討する
+- **「失敗すること」を検証するアサーションは終了コードを潰さない**: `run_psql() { ... || true; }` のようにエラーを飲み込むヘルパー（`|| true` / `2>/dev/null` で常に exit 0）を、「このコマンドは失敗するはず」という否定的アサーション（例: レプリカが書き込みを拒否する、権限のないユーザがアクセスできない）に流用しないこと。飲み込みヘルパーを否定的アサーションの `if` 条件に使うと常に真になり、正常な構成でも FAIL を報告する。否定的アサーションは次のいずれかで検証する:
+  - コマンド出力（`2>&1` で stderr も取得）に期待するエラーメッセージが含まれるか（例: `grep -qi 'read-only'`）
+  - 副作用が発生しなかったこと（例: 作成されるはずのないテーブルが `to_regclass(...) IS NULL`）
+  - 飲み込まない専用の呼び出しで実際の終了コードを直接判定する
+- **`set -e` 下での終了コード取得**: `set -euo pipefail` のスクリプトで失敗しうるコマンドの結果を分岐に使う場合は `if cmd; then` か `cmd && rc=0 || rc=$?` の形にし、`cmd; rc=$?` と裸で書かない（`set -e` で先に落ちる）。
 
 ---
 

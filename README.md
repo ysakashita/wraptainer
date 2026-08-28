@@ -8,10 +8,12 @@
 `apps/<app>/` にソースコードを置いて `make all` を実行するだけで、次のステップが自動で走ります。
 
 ```text
-analyze → dockerfile → compose → deploy → test
+analyze → dockerfile → compose → deploy → test → learn
 ```
 
 各ステップは Claude Code (claude CLI) を呼び出し、[12factor.net](https://12factor.net/) に準拠した設計ドキュメント・Dockerfile・docker-compose.yml を生成します。デプロイやテストが失敗した場合は最大 4 回まで自動で修正を試みます。
+
+テストが全て通ると最後に `learn` ステップが走り、その実行で発生した失敗と自動修正の内容を**汎用的な再発防止策**として [CLAUDE.md](CLAUDE.md) と `prompts/` に反映します。様々なアプリで実行を重ねるほどポリシーの精度が上がり、次のアプリでは同じ失敗を最初から避けられるようになります（[学習ループ](#学習ループself-improving) 参照）。
 
 ## 前提条件
 
@@ -32,7 +34,8 @@ wraptainer/
 │   ├── test.md           # Step 4: テストスクリプト生成プロンプト
 │   ├── fix-dockerfile.md # Dockerfile 自動修正プロンプト
 │   ├── fix-compose.md    # docker-compose.yml 自動修正プロンプト
-│   └── fix-test.md       # テストスクリプト自動修正プロンプト
+│   ├── fix-test.md       # テストスクリプト自動修正プロンプト
+│   └── learn.md          # Step 7: ポリシー学習プロンプト
 ├── apps/
 │   └── <app>/            # コンテナ化対象のソースコード（.gitignore 対象）
 └── _out/
@@ -67,6 +70,7 @@ make dockerfile APP_DIR=apps/your-app   # Dockerfile 生成
 make compose    APP_DIR=apps/your-app   # docker-compose.yml 生成
 make deploy     APP_DIR=apps/your-app   # docker compose up --build
 make test       APP_DIR=apps/your-app   # テストスクリプト生成 & 実行
+make learn      APP_DIR=apps/your-app   # テスト全 PASS 後、今回の修正をポリシーへ反映
 ```
 
 ### 4. クリーンアップ
@@ -86,6 +90,7 @@ make distclean  APP_DIR=apps/your-app   # down + clean
 | `docker-compose.yml` | `apps/<app>/` | 全サービス（LB・アプリ・DB 等）の構成定義 |
 | `test-run.sh` | `_out/<app>/` | コンテナ動作確認テストスクリプト |
 | `test-results.md` | `_out/<app>/` | テスト実行結果 |
+| `fix-journal.md` | `_out/<app>/` | その実行で発生した失敗と自動修正の記録（`learn` の入力。失敗がなければ生成されない） |
 
 > `apps/<app>/` 配下の既存ファイルは変更しません。Dockerfile と docker-compose.yml の**追加**のみ行います。
 
@@ -99,6 +104,22 @@ make distclean  APP_DIR=apps/your-app   # down + clean
 | 2 | docker-compose.yml を修正 | docker-compose.yml を修正 → 再デプロイ → テストスクリプトを再生成 |
 | 3 | Dockerfile + docker-compose.yml を同時修正 | テストスクリプトを再生成 |
 | 4 | 失敗終了 | 失敗終了 |
+
+> `docker compose up --build` 再実行時のコンテナ再作成レース（`container ... is not connected to the network`）は docker-compose.yml の不具合ではないため、Makefile がクリーンな `down` → `up` の再試行と BuildKit アテステーション無効化（`BUILDX_NO_DEFAULT_ATTESTATIONS=1`）で対処します。
+
+## 学習ループ（self-improving）
+
+`make all` の最後（テストが全て PASS したときのみ）に `learn` ステップが実行されます。
+
+1. `deploy` / `test` は失敗のたびに内容を `_out/<app>/fix-journal.md` に記録します（`deploy` 開始時にリセット。一度も失敗しなければ作られません）。
+2. `learn` はジャーナルがある場合のみ Claude Code を呼び出し、失敗を「クラス」に分類して、**別のアプリでも再発しうる汎用的なもの**だけを [CLAUDE.md](CLAUDE.md) と `prompts/` の適切なセクションに追記します。
+3. ガードレール:
+   - アプリ名・バージョン・ポート等の固有値は書かない（言語 / ミドルウェア共通の粒度に一般化）
+   - 追記前に Grep して同等の記述があれば何もしない（冪等）
+   - 既存記述の削除・書き換えはしない（`Edit` ツールのみ許可）
+   - 失敗しても生成物・テスト結果には影響しない
+
+これを様々なアプリで積み重ねることで、ポリシー文書が回を追うごとに賢くなり、次のアプリでは前回の失敗を最初から回避した生成物が出ます。
 
 ## ポリシー・プロンプト
 
@@ -115,3 +136,4 @@ make distclean  APP_DIR=apps/your-app   # down + clean
 | `prompts/fix-dockerfile.md` | Dockerfile 自動修正 |
 | `prompts/fix-compose.md` | docker-compose.yml 自動修正 |
 | `prompts/fix-test.md` | テストスクリプト自動修正 |
+| `prompts/learn.md` | テスト全 PASS 後のポリシー学習 |
