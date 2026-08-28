@@ -1,4 +1,4 @@
-APP_DIR  ?= apps/simple-shopping-site
+APP_DIR  ?=
 APP_NAME ?= $(shell basename "$(strip $(APP_DIR))")
 
 ifeq ($(strip $(APP_DIR)),)
